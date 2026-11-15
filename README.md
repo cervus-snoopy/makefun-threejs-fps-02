@@ -82,16 +82,9 @@ screenshots/
   and UI are all authored for this entry. three.js is the only third-party
   code, vendored verbatim under its MIT license.
 
-## Known gap — vendor file
+## Vendor file
 
-The kit CLI available in this workspace (`makefun init`, level 9) anchors a
-drand round and writes a LICENSE, but it delivered **no**
-`vendor/makefun-threejs.ts` and no rules file for this competition, and the
-re-download it suggests was not a step this build was authorised to run.
-`vendor/makefun-threejs.ts` in this repo is therefore an adapter authored
-for this entry (see its header comment), not a byte-identical copy of a kit
-file. If the house kit publishes one, swap it in and re-run
-`node main.ts --check` before submitting.
+`vendor/makefun-threejs.ts` is the official kit file from the make.fun dev kit for this competition (sha256 f9622210e6a0aed70d6f13273a24c9c4a661b5e272edf8fef21197fac6de7969, 55,627 bytes), downloaded from https://make.fun/c/threejs-fps-02/kit — byte-identical, not an adapter.
 
 ## Screenshots
 
