@@ -1,28 +1,93 @@
-// main.ts — SANDLINE entry point.
+// main.ts — SANDLINE entry point (threejs-fps-02).
 //
-// Run the game:   node main.ts [--port 8080]
-// Validate only:  node main.ts --check
+// What it does, by mode:
+//
+//   node main.ts                          hand the game in: validate the entry,
+//                                         copy game/ + screenshots/ to /output
+//                                         (or $MAKEFUN_OUTPUT_DIR) and write
+//                                         /output/dossier.json with the kit's
+//                                         buildDossier, then exit. This is the
+//                                         mode the grader runs.
+//   node main.ts --check                 validate only, exit 0/1, serve nothing.
+//   node main.ts --serve [--port 8080]   serve the game locally for playtesting.
 //
 // Node 22+ (type stripping; Node 24 runs this file directly). No
-// dependencies, no build step: the game is static files under game/ and this
-// file only serves them and validates the entry against the rules in
-// vendor/makefun-threejs.ts.
+// dependencies, no build step: the game is static files under game/.
+//
+// The match constants and the seeded RNG live here, next to the game they
+// describe — the kit's vendor file only supplies buildDossier and the
+// three.js file names, which are the only names imported from it.
 
 import { createServer } from "node:http";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, extname, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  MATCH_CONFIG,
-  ENTRY_RULES,
-  DEFAULT_SEED,
-  mulberry32,
+  buildDossier,
+  THREE_VERSION,
+  THREE_MODULE_FILE,
+  THREE_CORE_FILE,
+  INDEX_HTML,
 } from "./vendor/makefun-threejs.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const GAME_DIR = join(ROOT, "game");
 const SHOTS_DIR = join(ROOT, "screenshots");
+
+// ---- Match constants (from the game itself: game/map.js MAP, game/main.js) ----
+const MATCH_CONFIG = {
+  threeRevision: THREE_VERSION, // "0.187.0"
+  mapName: "Dustworks Yard",
+  roundsToWin: 5,
+  maxRounds: 9,
+  roundTime: 100,
+  buyTime: 15,
+};
+
+// The seeded RNG stream every bot draw comes from. Same seed the game uses
+// (game/main.js: SEED, the drand round from `makefun init`), so the draws
+// proven here are the draws the game replays.
+const DEFAULT_SEED = 33976828;
+
+// mulberry32: the same tiny seeded RNG game/engine.js uses. One function,
+// no state outside the closure, so the same seed always replays the same
+// stream of draws.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return function next(): number {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The entry rules this file checks, each with the line --check prints when
+// the rule passes. Short, plain statements of what the rule means.
+const ENTRY_RULES: Array<{ name: string; detail: string }> = [
+  { name: "entrypoint", detail: "main.ts at the repo root hands the game in" },
+  { name: "license", detail: "MIT license (SPDX identifier on the first line)" },
+  { name: "game-static", detail: "all game source files present under game/" },
+  { name: "three-vendored", detail: "three.js r187 vendored locally (module + core, no CDN)" },
+  { name: "import-map-local", detail: "import map points at the local vendored three.js files" },
+  { name: "no-network", detail: "no network calls or remote URLs in the game sources" },
+  { name: "screenshots", detail: "3–4 real rendered screenshots in screenshots/" },
+  { name: "deterministic", detail: "bots use the seeded RNG only (no Math.random / Date.now)" },
+  { name: "dossier", detail: "dossier builds from game/ + screenshots/ inside the gate caps" },
+];
+
+// The scorer's own caps (kit starter main.ts / gate.json): only
+// text_max_bytes shapes the bytes; the others refuse an entry the scorer
+// would refuse (more than 4 screenshots or one over 256 KiB; more than 993
+// files in game/ or 48 MiB of game files in all).
+const DOSSIER_CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+};
+const DOSSIER_MAX_BYTES = 1500000; // dossier.json at most 1.5 MiB, per RULES.txt
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -77,7 +142,7 @@ async function checkEntry(): Promise<Array<{ name: string; ok: boolean; detail: 
   );
 
   // three-vendored
-  const threeFiles = ["three.module.min.js", "three.core.min.js"];
+  const threeFiles = [THREE_MODULE_FILE, THREE_CORE_FILE];
   let threeOk = true;
   let threeDetail = "";
   for (const f of threeFiles) {
@@ -97,10 +162,10 @@ async function checkEntry(): Promise<Array<{ name: string; ok: boolean; detail: 
 
   // import-map-local
   try {
-    const html = await readText(join(GAME_DIR, "index.html"));
+    const html = await readText(join(GAME_DIR, INDEX_HTML));
     const okMap =
-      html.includes('"three": "./three.module.min.js"') &&
-      html.includes('"three/core": "./three.core.min.js"') &&
+      html.includes(`"three": "./${THREE_MODULE_FILE}"`) &&
+      html.includes(`"three/core": "./${THREE_CORE_FILE}"`) &&
       !html.includes("cdn.jsdelivr") && !html.includes("unpkg.com");
     results.push(
       okMap
@@ -159,7 +224,42 @@ async function checkEntry(): Promise<Array<{ name: string; ok: boolean; detail: 
       : fail("deterministic", "bots.js must use the seeded RNG (this.rng) with no Math.random / Date.now"),
   );
 
+  // dossier: the judge reads dossier.json, so it must build cleanly from
+  // game/ + screenshots/ inside the gate caps. Build it in memory here;
+  // the handoff writes the same bytes to /output/dossier.json.
+  try {
+    const bytes = buildDossier(ROOT, DOSSIER_CAPS);
+    results.push(
+      bytes.length <= DOSSIER_MAX_BYTES
+        ? { name: "dossier", ok: true, detail: `${byName.get("dossier") as string} (${bytes.length} bytes)` }
+        : fail("dossier", `dossier ${bytes.length} bytes, over the ${DOSSIER_MAX_BYTES} cap`),
+    );
+  } catch (e) {
+    results.push(fail("dossier", `buildDossier failed: ${(e as Error).message}`));
+  }
+
   return results;
+}
+
+async function handIn(outDir: string): Promise<void> {
+  const checks = await checkEntry();
+  const bad = checks.filter((c) => !c.ok);
+  for (const c of checks) console.log(`[check] ${c.ok ? "ok" : "FAIL"} ${c.name}: ${c.detail}`);
+  if (bad.length > 0) {
+    console.error("[check] refusing to hand in an invalid entry — fix the failures above");
+    process.exit(1);
+  }
+  mkdirSync(outDir, { recursive: true });
+  cpSync(GAME_DIR, join(outDir, "game"), { recursive: true });
+  mkdirSync(join(outDir, "screenshots"), { recursive: true });
+  if (existsSync(SHOTS_DIR)) cpSync(SHOTS_DIR, join(outDir, "screenshots"), { recursive: true });
+  // The scorer rebuilds the dossier with the same library and compares byte
+  // for byte, so these must be exactly the bytes buildDossier writes.
+  const dossier = buildDossier(outDir, DOSSIER_CAPS);
+  writeFileSync(join(outDir, "dossier.json"), dossier);
+  console.log(`[handoff] game/ + screenshots/ copied to ${outDir}`);
+  console.log(`[handoff] dossier.json written (${dossier.length} bytes)`);
+  console.log(`[handoff] SANDLINE ready — map: ${MATCH_CONFIG.mapName}, first to ${MATCH_CONFIG.roundsToWin} rounds`);
 }
 
 async function serve(port: number): Promise<void> {
@@ -202,8 +302,18 @@ if (args.includes("--check")) {
     if (!c.ok) ok = false;
   }
   process.exit(ok ? 0 : 1);
-} else {
+} else if (args.includes("--serve")) {
   const portArg = args.indexOf("--port");
   const port = portArg >= 0 ? parseInt(args[portArg + 1] ?? "8080", 10) : 8080;
   await serve(port);
+} else {
+  // Default: hand the game in, as the grader runs it.
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  await handIn(outDir);
 }
+
+// r2 polish: main.ts re-authored against the official vendor API (only
+// buildDossier + three.js file constants are imported from it); match
+// constants, seed and mulberry32 now live here, and the default run hands
+// the game in with a dossier instead of serving forever. Dead weight
+// game/three.core.js (61,162 lines, never loaded) was removed.
