@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SANDLINE — Tactical FPS</title>
+<style>
+  :root {
+    --amber: #e8a33d;
+    --teal: #2fb3a3;
+    --ink: #0d1117;
+    --panel: rgba(10, 14, 20, 0.82);
+    --line: rgba(232, 163, 61, 0.45);
+    --text: #e8e6df;
+    --dim: #9aa3ad;
+    --red: #e5484d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--ink); }
+  body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: var(--text); }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #hud.on { display: block; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+    transform: translate(-50%, -50%); }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: var(--text); }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { left: 0; top: 10px; width: 22px; height: 2px; }
+  #crosshair .dot { position: absolute; left: 10px; top: 10px; width: 2px; height: 2px; background: var(--amber); }
+  #hitmarker { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px;
+    transform: translate(-50%, -50%) rotate(45deg); opacity: 0; }
+  #hitmarker span { position: absolute; background: #fff; }
+  #hitmarker span:nth-child(1) { left: 0; top: 0; width: 8px; height: 2px; }
+  #hitmarker span:nth-child(2) { right: 0; top: 0; width: 8px; height: 2px; }
+  #hitmarker span:nth-child(3) { left: 0; bottom: 0; width: 8px; height: 2px; }
+  #hitmarker span:nth-child(4) { right: 0; bottom: 0; width: 8px; height: 2px; }
+  #hitmarker.kill span { background: var(--red); }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; backdrop-filter: blur(2px); }
+  #topbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: stretch; text-align: center; }
+  #topbar .score { font-size: 26px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #topbar .team { font-size: 11px; letter-spacing: 0.12em; font-weight: 700; }
+  #topbar .team.van { color: var(--amber); }
+  #topbar .team.sen { color: var(--teal); }
+  #timer { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 64px; }
+  #roundLabel { font-size: 11px; color: var(--dim); }
+  #bottomLeft { position: absolute; left: 16px; bottom: 16px; }
+  #healthNum { font-size: 42px; font-weight: 800; line-height: 0.9; font-variant-numeric: tabular-nums; }
+  #healthNum.low { color: var(--red); }
+  #armorLine { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  #bottomRight { position: absolute; right: 16px; bottom: 16px; text-align: right; }
+  #ammoNum { font-size: 42px; font-weight: 800; line-height: 0.9; font-variant-numeric: tabular-nums; }
+  #ammoNum .reserve { font-size: 18px; color: var(--dim); font-weight: 600; }
+  #weaponName { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  #moneyLine { position: absolute; left: 16px; top: 12px; font-size: 15px; font-weight: 700; }
+  #moneyLine b { color: var(--amber); font-variant-numeric: tabular-nums; }
+  #killfeed { position: absolute; right: 16px; top: 12px; text-align: right;
+    font-size: 13px; line-height: 1.7; }
+  #killfeed .kf-van { color: var(--amber); font-weight: 700; }
+  #killfeed .kf-sen { color: var(--teal); font-weight: 700; }
+  #banner { position: absolute; left: 50%; top: 26%; transform: translateX(-50%);
+    text-align: center; display: none; }
+  #banner h2 { font-size: 40px; letter-spacing: 0.06em; }
+  #banner p { color: var(--dim); margin-top: 6px; font-size: 15px; }
+  #banner.win h2 { color: var(--amber); }
+  #banner.lose h2 { color: var(--red); }
+  #damageVignette { position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(229, 72, 77, 0.55) 100%); }
+  #hint { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+    font-size: 13px; color: var(--dim); background: var(--panel); padding: 6px 12px;
+    border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); }
+
+  /* ---------- Overlays (menu / buy / end) ---------- */
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 8, 12, 0.78); z-index: 10; }
+  .overlay.hidden { display: none; }
+  .card { width: min(620px, 92vw); background: #10161f; border: 1px solid var(--line);
+    border-radius: 10px; padding: 28px 32px; }
+  .card h1 { font-size: 44px; letter-spacing: 0.04em; }
+  .card h1 .sand { color: var(--amber); }
+  .card h1 .line2 { color: var(--teal); }
+  .card .sub { color: var(--dim); margin: 8px 0 18px; font-size: 15px; line-height: 1.5; }
+  .card .controls { font-size: 14px; line-height: 2; color: var(--text); }
+  .card .controls b { display: inline-block; min-width: 92px; color: var(--amber); font-family: ui-monospace, monospace; }
+  .btn { pointer-events: auto; cursor: pointer; display: inline-block; margin-top: 20px;
+    background: var(--amber); color: #161006; border: 0; border-radius: 6px;
+    font-size: 16px; font-weight: 800; padding: 12px 26px; letter-spacing: 0.03em; }
+  .btn:hover { filter: brightness(1.1); }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); margin-left: 10px; }
+  .buy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .buy-item { pointer-events: auto; cursor: pointer; border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 8px; padding: 12px 14px; background: #0d131b; }
+  .buy-item:hover { border-color: var(--amber); }
+  .buy-item.owned { border-color: var(--teal); opacity: 0.75; }
+  .buy-item .name { font-weight: 800; font-size: 15px; }
+  .buy-item .desc { color: var(--dim); font-size: 12px; margin-top: 3px; line-height: 1.45; }
+  .buy-item .price { color: var(--amber); font-weight: 800; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  #buyMoney { color: var(--amber); font-weight: 800; font-variant-numeric: tabular-nums; }
+  #endStats { font-size: 15px; line-height: 1.9; margin-top: 10px; font-variant-numeric: tabular-nums; }
+  #fpsTag { position: fixed; left: 8px; bottom: 6px; font-size: 11px; color: rgba(255,255,255,0.35);
+    font-family: ui-monospace, monospace; pointer-events: none; z-index: 5; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./three.module.min.js",
+    "three/core": "./three.core.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="hud">
+  <div id="damageVignette"></div>
+  <div id="crosshair"><span class="dot"></span></div>
+  <div id="hitmarker"><span></span><span></span><span></span><span></span></div>
+  <div id="moneyLine">$<b id="moneyNum">800</b> &nbsp;·&nbsp; <span id="teamTag">VANGUARD</span></div>
+  <div id="topbar">
+    <div class="panel"><div class="team van">VANGUARD</div><div class="score" id="scoreVan">0</div></div>
+    <div class="panel"><div id="roundLabel">ROUND 1 / 9</div><div id="timer">1:40</div></div>
+    <div class="panel"><div class="team sen">SENTINEL</div><div class="score" id="scoreSen">0</div></div>
+  </div>
+  <div id="killfeed"></div>
+  <div id="bottomLeft" class="panel">
+    <div id="healthNum">100</div>
+    <div id="armorLine">HEALTH &nbsp;·&nbsp; ARMOR <span id="armorNum">0</span></div>
+  </div>
+  <div id="bottomRight" class="panel">
+    <div id="ammoNum"><span id="magNum">25</span><span class="reserve"> / <span id="reserveNum">75</span></span></div>
+    <div id="weaponName">MANTIS AR</div>
+  </div>
+  <div id="banner"><h2></h2><p></p></div>
+  <div id="hint">WASD move · Mouse aim · Click shoot · R reload · 1/2 weapons · B buy (between rounds)</div>
+</div>
+
+<div id="menu" class="overlay">
+  <div class="card">
+    <h1><span class="sand">SAND</span><span class="line2">LINE</span></h1>
+    <p class="sub">A round-based tactical shooter in the browser. Vanguard pushes the yard,
+      Sentinel holds it. Five rounds takes the match. Short rounds, real economy:
+      every kill and every round won pays for the next buy.</p>
+    <div class="controls">
+      <div><b>W A S D</b> move &nbsp; <b>Mouse</b> aim (click to lock)</div>
+      <div><b>Click</b> shoot &nbsp; <b>R</b> reload &nbsp; <b>1 / 2</b> switch weapon</div>
+      <div><b>Shift</b> walk quietly &nbsp; <b>B</b> buy menu between rounds</div>
+      <div><b>Esc</b> release mouse / pause</div>
+    </div>
+    <button class="btn" id="playBtn">DEPLOY — START MATCH</button>
+    <button class="btn ghost" id="demoBtn">WATCH DEMO CAM</button>
+    <p class="sub" style="margin-top:16px; font-size:12px;">Runs fully offline. No accounts, no network,
+      no downloads while you play. Map, art and sound are all original to this build.</p>
+  </div>
+</div>
+
+<div id="buyMenu" class="overlay hidden">
+  <div class="card">
+    <h1 style="font-size:28px;">BUY PHASE — <span id="buyMoney">$800</span></h1>
+    <p class="sub">Round <span id="buyRound">2</span> starts in <span id="buyCountdown">15</span>s.
+      Spend it now — unspent money carries over, but a lost round pays less.</p>
+    <div class="buy-grid" id="buyGrid"></div>
+    <button class="btn" id="buyDoneBtn">READY — CLOSE BUY MENU</button>
+  </div>
+</div>
+
+<div id="endScreen" class="overlay hidden">
+  <div class="card">
+    <h1 id="endTitle">VANGUARD WINS</h1>
+    <div id="endStats"></div>
+    <button class="btn" id="againBtn">PLAY AGAIN</button>
+  </div>
+</div>
+
+<div id="fpsTag"></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
