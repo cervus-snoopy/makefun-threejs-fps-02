@@ -1,7 +1,8 @@
-// bots.js — bot operatives: movement, aiming, shooting and dying.
-// Each bot is a small capsule + head sphere + a coloured name plate in the
-// scene. Behaviour is a simple state machine (patrol -> engage -> reposition)
-// driven by the match's seeded RNG, so a fixed seed replays the same match.
+// bots.js — bot operatives: how they move, aim, shoot and die.
+// Each bot is a small capsule with a head sphere and a coloured name plate
+// in the scene. Behaviour is a small state machine — patrol, then engage,
+// then reposition — driven by the match's seeded RNG, so a fixed seed
+// replays the same match.
 
 import * as THREE from "three";
 import { clamp, angleLerp, moveAndCollide, rayBox, raySphere } from "./engine.js";
@@ -12,6 +13,35 @@ const BOT_NAMES = {
 };
 
 const TEAM_COLORS = { vanguard: 0xe8a33d, sentinel: 0x2fb3a3 };
+
+// Build one bot's visible body: capsule torso, dark head sphere, glowing
+// visor, and a shoulder plate on each side so the team reads at a glance.
+function buildBotMesh(team, scene, pos) {
+  const color = TEAM_COLORS[team];
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c2128, roughness: 0.8 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.9, 6, 12), bodyMat);
+  body.position.y = 1.05;
+  body.castShadow = true;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), darkMat);
+  head.position.y = 1.85;
+  head.castShadow = true;
+  group.add(head);
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.1),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8 }));
+  visor.position.set(0, 1.87, 0.2);
+  group.add(visor);
+  for (const s of [-1, 1]) {
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.4), darkMat);
+    plate.position.set(s * 0.38, 1.5, 0);
+    group.add(plate);
+  }
+  group.position.copy(pos);
+  scene.add(group);
+  return { group, body, head };
+}
 
 export class Bot {
   constructor(scene, team, index, spawn, rng) {
@@ -33,33 +63,10 @@ export class Bot {
     this.damage = 13; // per bot bullet
     this.fireInterval = 0.16;
 
-    const color = TEAM_COLORS[team];
-    const group = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
-    const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c2128, roughness: 0.8 });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.9, 6, 12), bodyMat);
-    body.position.y = 1.05;
-    body.castShadow = true;
-    group.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), darkMat);
-    head.position.y = 1.85;
-    head.castShadow = true;
-    group.add(head);
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.1),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8 }));
-    visor.position.set(0, 1.87, 0.2);
-    group.add(visor);
-    // Shoulder plates make teams readable at a glance.
-    for (const s of [-1, 1]) {
-      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.4), darkMat);
-      plate.position.set(s * 0.38, 1.5, 0);
-      group.add(plate);
-    }
-    group.position.copy(this.pos);
-    scene.add(group);
-    this.group = group;
-    this.body = body;
-    this.head = head;
+    const mesh = buildBotMesh(team, scene, this.pos);
+    this.group = mesh.group;
+    this.body = mesh.body;
+    this.head = mesh.head;
   }
 
   get headPos() {
@@ -74,27 +81,36 @@ export class Bot {
     this.waypoint = waypoints[Math.floor(this.rng() * waypoints.length)];
   }
 
-  // Find the nearest visible living enemy. Visibility is a ray test against
-  // the map's colliders so bots cannot shoot through walls.
+  // Find the nearest living enemy this bot can actually see. Seeing is a
+  // ray test against the map's colliders, so bots cannot shoot through walls.
+  // True when nothing solid stands between this bot's eyes and the enemy.
+  hasLineOfSight(enemy, colliders) {
+    const dx = enemy.pos.x - this.pos.x;
+    const dz = enemy.pos.z - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const o = { x: this.pos.x, y: 1.6, z: this.pos.z };
+    const d = { x: dx / dist, y: (1.2 - 1.6) / dist, z: dz / dist };
+    for (const b of colliders) {
+      if (rayBox(o, d, b, dist) !== Infinity) return false;
+    }
+    return true;
+  }
+
   acquire(enemies, colliders) {
-    let best = null;
-    let bestDist = 34;
+    let nearest = null;
+    let nearestDist = 34;
     for (const e of enemies) {
       if (!e.alive) continue;
       const dx = e.pos.x - this.pos.x;
       const dz = e.pos.z - this.pos.z;
       const dist = Math.hypot(dx, dz);
-      if (dist > bestDist) continue;
-      const o = { x: this.pos.x, y: 1.6, z: this.pos.z };
-      const d = { x: dx / dist, y: (1.2 - 1.6) / dist, z: dz / dist };
-      let blocked = false;
-      for (const b of colliders) {
-        if (rayBox(o, d, b, dist) !== Infinity) { blocked = true; break; }
-      }
-      if (!blocked) { best = e; bestDist = dist; }
+      if (dist > nearestDist) continue;
+      if (!this.hasLineOfSight(e, colliders)) continue;
+      nearest = e;
+      nearestDist = dist;
     }
-    this.target = best;
-    return best;
+    this.target = nearest;
+    return nearest;
   }
 
   update(dt, ctx) {
@@ -104,48 +120,57 @@ export class Bot {
     this.strafeTimer -= dt;
 
     const target = this.acquire(enemies, colliders);
-    if (target) {
-      // Engage: face the target, strafe, fire in bursts after a reaction delay.
-      const dx = target.pos.x - this.pos.x;
-      const dz = target.pos.z - this.pos.z;
-      const wantYaw = Math.atan2(-dx, -dz);
-      this.yaw = angleLerp(this.yaw, wantYaw, Math.min(1, dt * 6));
-      if (this.reaction <= 0) this.reaction = 0.35 + this.rng() * 0.5;
-      this.reaction -= dt;
-      if (this.strafeTimer <= 0) {
-        this.strafeDir *= -1;
-        this.strafeTimer = 0.7 + this.rng() * 0.9;
-      }
-      const dist = Math.hypot(dx, dz);
-      const strafe = this.strafeDir * this.speed * 0.45;
-      const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
-      const mx = -fz * strafe + (dist > 14 ? -fx * this.speed * 0.5 : 0);
-      const mz = fx * strafe + (dist > 14 ? -fz * this.speed * 0.5 : 0);
-      moveAndCollide(this.pos, mx * dt, mz * dt, 0.4, colliders);
-      if (this.reaction <= 0 && this.shootCooldown <= 0 && dist < 34) {
-        this.shootCooldown = this.fireInterval;
-        // Inaccuracy grows with distance; bots miss sometimes on purpose.
-        const spread = 0.03 + dist * 0.0016;
-        const hitChance = clamp(0.62 - dist * 0.008, 0.18, 0.62);
-        onShoot(this, target, hitChance, spread);
-        if (this.rng() < 0.12) this._burstPause();
-      }
-    } else {
-      // Patrol: walk to a waypoint, pick a new one on arrival.
-      if (!this.waypoint) this.pickWaypoint(waypoints);
-      const dx = this.waypoint.x - this.pos.x;
-      const dz = this.waypoint.z - this.pos.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 1.2) {
-        this.pickWaypoint(waypoints);
-      } else {
-        const wantYaw = Math.atan2(-dx, -dz);
-        this.yaw = angleLerp(this.yaw, wantYaw, Math.min(1, dt * 4));
-        moveAndCollide(this.pos, (dx / dist) * this.speed * dt, (dz / dist) * this.speed * dt, 0.4, colliders);
-      }
-    }
+    if (target) this._engage(dt, ctx, target);
+    else this._patrol(dt, ctx);
     this.group.position.set(this.pos.x, 0, this.pos.z);
     this.group.rotation.y = this.yaw + Math.PI;
+  }
+
+  // Engage: turn to face the target, strafe, and fire in bursts once the
+  // reaction delay has run out.
+  _engage(dt, ctx, target) {
+    const { colliders, onShoot } = ctx;
+    const dx = target.pos.x - this.pos.x;
+    const dz = target.pos.z - this.pos.z;
+    const wantYaw = Math.atan2(-dx, -dz);
+    this.yaw = angleLerp(this.yaw, wantYaw, Math.min(1, dt * 6));
+    if (this.reaction <= 0) this.reaction = 0.35 + this.rng() * 0.5;
+    this.reaction -= dt;
+    if (this.strafeTimer <= 0) {
+      this.strafeDir *= -1;
+      this.strafeTimer = 0.7 + this.rng() * 0.9;
+    }
+    const dist = Math.hypot(dx, dz);
+    const strafe = this.strafeDir * this.speed * 0.45;
+    const fx = Math.sin(this.yaw);
+    const fz = Math.cos(this.yaw);
+    const mx = -fz * strafe + (dist > 14 ? -fx * this.speed * 0.5 : 0);
+    const mz = fx * strafe + (dist > 14 ? -fz * this.speed * 0.5 : 0);
+    moveAndCollide(this.pos, mx * dt, mz * dt, 0.4, colliders);
+    if (this.reaction <= 0 && this.shootCooldown <= 0 && dist < 34) {
+      this.shootCooldown = this.fireInterval;
+      // Inaccuracy grows with distance; bots miss on purpose sometimes.
+      const spread = 0.03 + dist * 0.0016;
+      const hitChance = clamp(0.62 - dist * 0.008, 0.18, 0.62);
+      onShoot(this, target, hitChance, spread);
+      if (this.rng() < 0.12) this._burstPause();
+    }
+  }
+
+  // Patrol: walk to a waypoint, pick a new one on arrival.
+  _patrol(dt, ctx) {
+    const { waypoints, colliders } = ctx;
+    if (!this.waypoint) this.pickWaypoint(waypoints);
+    const dx = this.waypoint.x - this.pos.x;
+    const dz = this.waypoint.z - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 1.2) {
+      this.pickWaypoint(waypoints);
+    } else {
+      const wantYaw = Math.atan2(-dx, -dz);
+      this.yaw = angleLerp(this.yaw, wantYaw, Math.min(1, dt * 4));
+      moveAndCollide(this.pos, (dx / dist) * this.speed * dt, (dz / dist) * this.speed * dt, 0.4, colliders);
+    }
   }
 
   _burstPause() {
@@ -196,3 +221,6 @@ export function playerHitTest(origin, dir, bot, maxDist) {
   if (headD <= bodyD) return { dist: headD, part: "head" };
   return { dist: bodyD, part: "body" };
 }
+
+// r2 polish: bots re-authored (same state machine, same RNG draw order, same
+// numbers; the nearest-enemy search now reads as nearest/nearestDist).

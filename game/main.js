@@ -1,7 +1,7 @@
-// main.js — SANDLINE entry point: renderer, first-person controller, shooting,
-// HUD, buy phase, round flow, and a demo camera (?demo=1, ?shot=1..4) used for
-// screenshots. Static ES module, no network: three.js is vendored locally and
-// every sound is synthesised in audio.js.
+// main.js — SANDLINE in play: renderer, first-person controller, shooting,
+// HUD, buy phase, round flow, and a demo camera (?demo=1, ?shot=1..4) used
+// for the screenshots. A static ES module, no network: three.js is vendored
+// locally and every sound is synthesised in audio.js.
 
 import * as THREE from "three";
 import { mulberry32, hashSeed, clamp, moveAndCollide, rayBox, formatTime } from "./engine.js";
@@ -12,20 +12,25 @@ import { WEAPONS, GEAR, ECONOMY } from "./weapons.js";
 import { SoundBank } from "./audio.js";
 
 // ---- Boot / URL params ------------------------------------------------------
+// ?demo=1 orbits the yard, ?shot=1..4 holds one of the four fixed screenshot
+// views. Both skip the menu and start a match straight away.
 const params = new URLSearchParams(location.search);
 const DEMO = params.has("demo") || params.has("shot");
 const SHOT = parseInt(params.get("shot") || "0", 10);
 const SEED = parseInt(params.get("seed") || "33976828", 10); // drand round from `makefun init`
 
 const $ = (id) => document.getElementById(id);
-const hud = $("hud"), menuEl = $("menu"), buyEl = $("buyMenu"), endEl = $("endScreen");
+const hud = $("hud");
+const menuEl = $("menu");
+const buyEl = $("buyMenu");
+const endEl = $("endScreen");
 
 // ---- Renderer / scene -------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // r187 removed PCFSoftShadowMap (falls back to this with a warning)
 $("app").appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -57,16 +62,19 @@ const playerTarget = {
   team: "vanguard",
 };
 
-const owned = { sidewinder: { mag: WEAPONS.sidewinder.magSize, reserve: WEAPONS.sidewinder.reserve } };
-let currentWeapon = "sidewinder";
+// What the player owns: the starting pistol, plus anything bought later.
+// Each entry is { mag, reserve } for the weapon's current ammunition.
+const inventory = { sidewinder: { mag: WEAPONS.sidewinder.magSize, reserve: WEAPONS.sidewinder.reserve } };
+let activeWeapon = "sidewinder";
 let firing = false;
 let lastShotAt = 0;
 let reloadingUntil = 0;
 let recoil = 0;
 
-// Viewmodel: a simple low-poly rifle built from boxes, parented to the camera.
-const gun = new THREE.Group();
-{
+// The viewmodel: a simple low-poly rifle built from boxes, parented to the
+// camera so it rides along with the player's view.
+function buildViewmodel() {
+  const gun = new THREE.Group();
   const dark = new THREE.MeshStandardMaterial({ color: 0x1c2128, roughness: 0.6, metalness: 0.4 });
   const mid = new THREE.MeshStandardMaterial({ color: 0x3a4149, roughness: 0.5, metalness: 0.5 });
   const amber = new THREE.MeshStandardMaterial({ color: 0xe8a33d, roughness: 0.5, metalness: 0.3 });
@@ -84,11 +92,16 @@ const gun = new THREE.Group();
   mag.rotation.x = 0.15;
   gun.add(receiver, barrel, grip, sight, mag);
   gun.position.set(0.28, -0.26, -0.5);
-  camera.add(gun);
+  return gun;
 }
+const gun = buildViewmodel();
+camera.add(gun);
 scene.add(camera);
 
 // ---- Bots -------------------------------------------------------------------
+// One seeded stream per match; each bot gets its own stream derived from the
+// match seed, the round and its index, so the same seed replays the same
+// match.
 let rng = mulberry32(SEED);
 let vanguardBots = [];
 let sentinelBots = [];
@@ -116,25 +129,41 @@ function updateTracers(dt) {
     const t = tracers[i];
     t.life -= dt;
     t.line.material.opacity = Math.max(0, t.life / 0.07) * 0.9;
-    if (t.life <= 0) { scene.remove(t.line); t.line.geometry.dispose(); tracers.splice(i, 1); }
+    if (t.life <= 0) {
+      scene.remove(t.line);
+      t.line.geometry.dispose();
+      tracers.splice(i, 1);
+    }
   }
 }
 
 // ---- HUD --------------------------------------------------------------------
-function updateHUD() {
+function updateHealthPanel() {
   $("healthNum").textContent = Math.max(0, Math.ceil(player.health));
   $("healthNum").classList.toggle("low", player.health <= 30);
   $("armorNum").textContent = Math.ceil(player.armor);
-  const w = WEAPONS[currentWeapon];
-  const ammo = owned[currentWeapon];
+}
+
+function updateAmmoPanel() {
+  const w = WEAPONS[activeWeapon];
+  const ammo = inventory[activeWeapon];
   $("magNum").textContent = ammo ? ammo.mag : 0;
   $("reserveNum").textContent = ammo ? ammo.reserve : 0;
   $("weaponName").textContent = w.name;
+}
+
+function updateScorePanel() {
   $("moneyNum").textContent = match.money.toLocaleString("en-US");
   $("scoreVan").textContent = match.score.vanguard;
   $("scoreSen").textContent = match.score.sentinel;
   $("roundLabel").textContent = `ROUND ${match.round} / ${MAP.maxRounds}`;
   $("timer").textContent = formatTime(match.phase === PHASE.BUY ? match.buyTimeLeft : match.timeLeft);
+}
+
+function updateHUD() {
+  updateHealthPanel();
+  updateAmmoPanel();
+  updateScorePanel();
 }
 
 function killfeed(killer, victim, headshot) {
@@ -190,26 +219,30 @@ function shootDirection(spread) {
 
 function playerShoot() {
   const now = performance.now() / 1000;
-  const w = WEAPONS[currentWeapon];
-  const ammo = owned[currentWeapon];
+  const w = WEAPONS[activeWeapon];
+  const ammo = inventory[activeWeapon];
   if (!player.alive || match.phase !== PHASE.ROUND) return;
   if (now < reloadingUntil) return;
   if (now - lastShotAt < 60 / w.rpm) return;
-  if (ammo.mag <= 0) { sounds.dryFire(); lastShotAt = now; return; }
+  if (ammo.mag <= 0) {
+    sounds.dryFire();
+    lastShotAt = now;
+    return;
+  }
   lastShotAt = now;
   ammo.mag -= 1;
   recoil = Math.min(recoil + (w.kind === "longbow" ? 0.05 : 0.022), 0.09);
-  sounds.shot(w.kind === "pistol" ? "pistol" : currentWeapon);
+  sounds.shot(w.kind === "pistol" ? "pistol" : activeWeapon);
 
   const origin = eyePos();
   const dir = shootDirection(w.spread);
-  // Nearest wall hit caps the shot.
+  // The nearest wall caps the shot.
   let wallDist = w.range;
   for (const b of map.colliders) {
     const t = rayBox(origin, dir, b, w.range);
     if (t < wallDist) wallDist = t;
   }
-  // Nearest living Sentinel bot in the way.
+  // The nearest living Sentinel bot in the way.
   let best = null;
   for (const bot of sentinelBots) {
     if (!bot.alive) continue;
@@ -236,8 +269,8 @@ function playerShoot() {
 }
 
 function reload() {
-  const w = WEAPONS[currentWeapon];
-  const ammo = owned[currentWeapon];
+  const w = WEAPONS[activeWeapon];
+  const ammo = inventory[activeWeapon];
   if (!ammo || ammo.mag === w.magSize || ammo.reserve <= 0) return;
   if (performance.now() / 1000 < reloadingUntil) return;
   reloadingUntil = performance.now() / 1000 + w.reloadTime;
@@ -293,7 +326,10 @@ function onBotShoot(shooter, target, hitChance, spread) {
     if (target === playerTarget) return;
     if (!target.alive) {
       killfeed(shooter, target, res.headshot);
-      if (shooter.team === "vanguard") { match.kills += 1; match.money += ECONOMY.killReward; }
+      if (shooter.team === "vanguard") {
+        match.kills += 1;
+        match.money += ECONOMY.killReward;
+      }
       checkRoundEnd();
     }
   }
@@ -308,10 +344,10 @@ function resetPositions() {
   player.velY = 0;
   player.health = 100;
   player.alive = true;
-  if (!owned[currentWeapon]) currentWeapon = "sidewinder";
-  for (const id of Object.keys(owned)) {
-    owned[id].mag = WEAPONS[id].magSize;
-    owned[id].reserve = WEAPONS[id].reserve;
+  if (!inventory[activeWeapon]) activeWeapon = "sidewinder";
+  for (const id of Object.keys(inventory)) {
+    inventory[id].mag = WEAPONS[id].magSize;
+    inventory[id].reserve = WEAPONS[id].reserve;
   }
   spawnBots();
 }
@@ -345,19 +381,12 @@ function endRound(winner, reason) {
   if (!res) return;
   const won = winner === "vanguard";
   showBanner(won ? "ROUND WON" : "ROUND LOST", `${reason} — ${match.score.vanguard} : ${match.score.sentinel}`, won ? "win" : "lose");
-  if (won) sounds.roundWin(); else sounds.roundLose();
+  if (won) sounds.roundWin();
+  else sounds.roundLose();
   updateHUD();
   setTimeout(() => {
     if (res.matchOver) {
-      const champ = match.finishMatch();
-      $("endTitle").textContent = champ === "vanguard" ? "VANGUARD WINS THE MATCH" : "SENTINEL WINS THE MATCH";
-      $("endStats").innerHTML =
-        `Final score — Vanguard ${match.score.vanguard} : ${match.score.sentinel} Sentinel<br>` +
-        `Your kills ${match.kills} · deaths ${match.deaths} · money $${match.money.toLocaleString("en-US")}<br>` +
-        `Seed ${SEED} · map Dustworks Yard · first to ${MAP.roundsToWin} rounds`;
-      endEl.classList.remove("hidden");
-      hud.classList.remove("on");
-      document.exitPointerLock?.();
+      showEndScreen();
     } else {
       match.nextRound();
       startBuyPhase();
@@ -373,80 +402,99 @@ function renderBuyMenu() {
   const grid = $("buyGrid");
   grid.innerHTML = "";
   for (const item of Object.values(GEAR)) {
-    const div = document.createElement("div");
-    div.className = "buy-item" + (owned[item.id] ? " owned" : "");
-    div.innerHTML = `<div class="name">${item.name}</div><div class="desc">${item.desc}</div>` +
-      `<div class="price">${owned[item.id] ? "OWNED" : "$" + item.price.toLocaleString("en-US")}</div>`;
-    div.onclick = () => {
-      if (owned[item.id]) { if (WEAPONS[item.id]) { currentWeapon = item.id; sounds.buy(); } renderBuyMenu(); updateHUD(); return; }
-      const res = match.buy(item.id);
-      if (!res.ok) { sounds.denied(); return; }
-      sounds.buy();
-      if (item.id === "armor") player.armor = 50;
-      else {
-        owned[item.id] = { mag: WEAPONS[item.id].magSize, reserve: WEAPONS[item.id].reserve };
-        currentWeapon = item.id;
-      }
-      renderBuyMenu();
-      updateHUD();
-    };
-    grid.appendChild(div);
+    grid.appendChild(makeBuyItem(item));
   }
 }
 
-$("buyDoneBtn").onclick = () => {
-  if (match.phase === PHASE.BUY) { match.buyTimeLeft = 0; startRound(); }
-};
-$("againBtn").onclick = () => location.reload();
+// The end-of-match scoreboard: final score, the player's record, and the
+// match settings that produced it.
+function matchSummaryHTML() {
+  return `Final score — Vanguard ${match.score.vanguard} : ${match.score.sentinel} Sentinel<br>` +
+    `Your kills ${match.kills} · deaths ${match.deaths} · money $${match.money.toLocaleString("en-US")}<br>` +
+    `Seed ${SEED} · map Dustworks Yard · first to ${MAP.roundsToWin} rounds`;
+}
+
+function showEndScreen() {
+  const champ = match.finishMatch();
+  $("endTitle").textContent = champ === "vanguard" ? "VANGUARD WINS THE MATCH" : "SENTINEL WINS THE MATCH";
+  $("endStats").innerHTML = matchSummaryHTML();
+  endEl.classList.remove("hidden");
+  hud.classList.remove("on");
+  document.exitPointerLock?.();
+}
+
+// Wire the menu buttons: deploy, demo camera, close-buy, play again.
+function bindMenuButtons() {
+  $("buyDoneBtn").onclick = () => {
+    if (match.phase === PHASE.BUY) {
+      match.buyTimeLeft = 0;
+      startRound();
+    }
+  };
+  $("againBtn").onclick = () => location.reload();
+}
 
 // ---- Input ------------------------------------------------------------------
 const keys = {};
-addEventListener("keydown", (e) => {
-  keys[e.code] = true;
-  if (e.code === "KeyR") reload();
-  if (e.code === "Digit1" && owned.sidewinder) { currentWeapon = "sidewinder"; updateHUD(); }
-  if (e.code === "Digit2") {
-    const ownedRifles = Object.keys(owned).filter((id) => id !== "sidewinder");
-    if (ownedRifles.length) { currentWeapon = ownedRifles[0]; updateHUD(); }
-  }
-  if (e.code === "KeyB" && match.phase === PHASE.BUY) buyEl.classList.toggle("hidden");
-  if (e.code === "Space" && player.alive && player.jumpY === 0 && match.phase === PHASE.ROUND) {
-    player.velY = 6.2;
-    e.preventDefault();
-  }
-});
-addEventListener("keyup", (e) => { keys[e.code] = false; });
-addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return;
-  if (match.phase !== PHASE.ROUND || !player.alive) return;
-  if (document.pointerLockElement !== renderer.domElement) {
-    renderer.domElement.requestPointerLock();
-    return;
-  }
-  firing = true;
-  if (!WEAPONS[currentWeapon].auto) playerShoot();
-});
-addEventListener("mouseup", (e) => { if (e.button === 0) firing = false; });
-addEventListener("mousemove", (e) => {
-  if (document.pointerLockElement !== renderer.domElement) return;
-  player.yaw -= e.movementX * 0.0022;
-  player.pitch = clamp(player.pitch - e.movementY * 0.0022, -1.45, 1.45);
-});
-document.addEventListener("pointerlockchange", () => {
-  if (document.pointerLockElement !== renderer.domElement) firing = false;
-});
-addEventListener("resize", () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+
+// Wire every player control: movement keys, weapon switching, reload, jump,
+// buy menu, mouse aim and fire, pointer lock, and window resize.
+function bindInputs() {
+  addEventListener("keydown", (e) => {
+    keys[e.code] = true;
+    if (e.code === "KeyR") reload();
+    if (e.code === "Digit1" && inventory.sidewinder) {
+      activeWeapon = "sidewinder";
+      updateHUD();
+    }
+    if (e.code === "Digit2") {
+      const ownedRifles = Object.keys(inventory).filter((id) => id !== "sidewinder");
+      if (ownedRifles.length) {
+        activeWeapon = ownedRifles[0];
+        updateHUD();
+      }
+    }
+    if (e.code === "KeyB" && match.phase === PHASE.BUY) buyEl.classList.toggle("hidden");
+    if (e.code === "Space" && player.alive && player.jumpY === 0 && match.phase === PHASE.ROUND) {
+      player.velY = 6.2;
+      e.preventDefault();
+    }
+  });
+  addEventListener("keyup", (e) => { keys[e.code] = false; });
+  addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (match.phase !== PHASE.ROUND || !player.alive) return;
+    if (document.pointerLockElement !== renderer.domElement) {
+      renderer.domElement.requestPointerLock();
+      return;
+    }
+    firing = true;
+    if (!WEAPONS[activeWeapon].auto) playerShoot();
+  });
+  addEventListener("mouseup", (e) => { if (e.button === 0) firing = false; });
+  addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement !== renderer.domElement) return;
+    player.yaw -= e.movementX * 0.0022;
+    player.pitch = clamp(player.pitch - e.movementY * 0.0022, -1.45, 1.45);
+  });
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement !== renderer.domElement) firing = false;
+  });
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+}
+
+bindInputs();
 
 // ---- Demo camera (screenshots) ----------------------------------------------
 const SHOT_VIEWS = [
-  { pos: [-24, 6, -14], look: [10, 1, -6] },   // spawn lane towards mid
-  { pos: [2, 5, 14], look: [24, 1, -14] },    // south lane towards site A
-  { pos: [10, 9, 0], look: [-6, 1, 0] },      // high over mid containers
-  { pos: [18, 2.2, -8], look: [24, 1.4, -14] }, // close on site A pylon
+  { pos: [-24, 6, -14], look: [10, 1, -6] },    // spawn lane towards mid
+  { pos: [2, 5, 14], look: [24, 1, -14] },     // south lane towards site A
+  { pos: [10, 9, 0], look: [-6, 1, 0] },       // high over the mid container stack
+  { pos: [18, 2.2, -8], look: [24, 1.4, -14] }, // close on the site A pylon
 ];
 let demoAngle = 0;
 
@@ -468,6 +516,88 @@ const clock = new THREE.Clock();
 let frames = 0;
 let fpsTimer = 0;
 
+function updatePlayerMovement(dt) {
+  // WASD relative to yaw; Shift walks (quieter, slower).
+  const run = keys.ShiftLeft || keys.ShiftRight ? 0.55 : 1;
+  let mx = 0;
+  let mz = 0;
+  if (keys.KeyW) mz -= 1;
+  if (keys.KeyS) mz += 1;
+  if (keys.KeyA) mx -= 1;
+  if (keys.KeyD) mx += 1;
+  if (mx !== 0 || mz !== 0) {
+    const len = Math.hypot(mx, mz);
+    mx /= len;
+    mz /= len;
+    const sin = Math.sin(player.yaw);
+    const cos = Math.cos(player.yaw);
+    const dx = (mx * cos - mz * sin) * player.speed * run * dt;
+    const dz = (mx * sin + mz * cos) * player.speed * run * dt;
+    moveAndCollide(player.pos, dx, dz, player.radius, map.colliders);
+    player.pos.x = clamp(player.pos.x, -MAP.width / 2 + 1, MAP.width / 2 - 1);
+    player.pos.z = clamp(player.pos.z, -MAP.depth / 2 + 1, MAP.depth / 2 - 1);
+  }
+  // Jump / gravity.
+  if (player.jumpY > 0 || player.velY !== 0) {
+    player.velY -= 18 * dt;
+    player.jumpY += player.velY * dt;
+    if (player.jumpY <= 0) {
+      player.jumpY = 0;
+      player.velY = 0;
+    }
+  }
+}
+
+function updateBotTeams(dt) {
+  // Bots fight both ways: Vanguard pushes the yard, Sentinel defends it
+  // and hunts the player.
+  for (const bot of vanguardBots) {
+    bot.update(dt, {
+      waypoints: map.waypoints, colliders: map.colliders,
+      enemies: sentinelBots, onShoot: onBotShoot,
+    });
+  }
+  for (const bot of sentinelBots) {
+    bot.update(dt, {
+      waypoints: map.waypoints, colliders: map.colliders,
+      enemies: [...vanguardBots, playerTarget], onShoot: onBotShoot,
+    });
+  }
+}
+
+function makeBuyItem(item) {
+  const div = document.createElement("div");
+  const owned = !!inventory[item.id];
+  div.className = "buy-item" + (owned ? " owned" : "");
+  div.innerHTML = `<div class="name">${item.name}</div><div class="desc">${item.desc}</div>` +
+    `<div class="price">${owned ? "OWNED" : "$" + item.price.toLocaleString("en-US")}</div>`;
+  div.onclick = () => {
+    if (owned) {
+      if (WEAPONS[item.id]) {
+        activeWeapon = item.id;
+        sounds.buy();
+      }
+      renderBuyMenu();
+      updateHUD();
+      return;
+    }
+    const res = match.buy(item.id);
+    if (!res.ok) {
+      sounds.denied();
+      return;
+    }
+    sounds.buy();
+    if (item.id === "armor") player.armor = 50;
+    else {
+      inventory[item.id] = { mag: WEAPONS[item.id].magSize, reserve: WEAPONS[item.id].reserve };
+      activeWeapon = item.id;
+    }
+    renderBuyMenu();
+    updateHUD();
+  };
+  return div;
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -475,57 +605,24 @@ function animate() {
   fpsTimer += dt;
   if (fpsTimer >= 1) {
     $("fpsTag").textContent = `SANDLINE demo · seed ${SEED} · ${frames} fps · three r187`;
-    frames = 0; fpsTimer = 0;
+    frames = 0;
+    fpsTimer = 0;
   }
 
-  // Match clock
+  // Match clock.
   const tick = match.tick(dt);
   if (tick?.buyDone && match.phase === PHASE.BUY) startRound();
   if (tick?.timeout && match.phase === PHASE.ROUND) endRound("sentinel", "Time expired — Sentinel held the yard");
 
   if (match.phase === PHASE.ROUND || match.phase === PHASE.ROUND_END) {
-    // Bots fight both ways.
-    for (const bot of vanguardBots) {
-      bot.update(dt, {
-        waypoints: map.waypoints, colliders: map.colliders,
-        enemies: sentinelBots, onShoot: onBotShoot,
-      });
-    }
-    for (const bot of sentinelBots) {
-      bot.update(dt, {
-        waypoints: map.waypoints, colliders: map.colliders,
-        enemies: [...vanguardBots, playerTarget], onShoot: onBotShoot,
-      });
-    }
+    updateBotTeams(dt);
   }
 
   if (DEMO) {
     updateDemoCamera(dt);
   } else if (player.alive || match.phase !== PHASE.ROUND) {
-    // Player movement (WASD relative to yaw).
-    const run = keys.ShiftLeft || keys.ShiftRight ? 0.55 : 1;
-    let mx = 0, mz = 0;
-    if (keys.KeyW) mz -= 1;
-    if (keys.KeyS) mz += 1;
-    if (keys.KeyA) mx -= 1;
-    if (keys.KeyD) mx += 1;
-    if (mx !== 0 || mz !== 0) {
-      const len = Math.hypot(mx, mz);
-      mx /= len; mz /= len;
-      const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
-      const dx = (mx * cos - mz * sin) * player.speed * run * dt;
-      const dz = (mx * sin + mz * cos) * player.speed * run * dt;
-      moveAndCollide(player.pos, dx, dz, player.radius, map.colliders);
-      player.pos.x = clamp(player.pos.x, -MAP.width / 2 + 1, MAP.width / 2 - 1);
-      player.pos.z = clamp(player.pos.z, -MAP.depth / 2 + 1, MAP.depth / 2 - 1);
-    }
-    // Jump / gravity.
-    if (player.jumpY > 0 || player.velY !== 0) {
-      player.velY -= 18 * dt;
-      player.jumpY += player.velY * dt;
-      if (player.jumpY <= 0) { player.jumpY = 0; player.velY = 0; }
-    }
-    if (firing && WEAPONS[currentWeapon].auto) playerShoot();
+    updatePlayerMovement(dt);
+    if (firing && WEAPONS[activeWeapon].auto) playerShoot();
     recoil = Math.max(0, recoil - dt * 0.25);
     camera.position.set(player.pos.x, 1.6 + player.jumpY, player.pos.z);
     camera.rotation.set(player.pitch + recoil, player.yaw, 0);
@@ -542,6 +639,7 @@ function animate() {
 }
 
 // ---- Start ------------------------------------------------------------------
+bindMenuButtons();
 $("playBtn").onclick = () => {
   sounds.ensure();
   menuEl.classList.add("hidden");
@@ -574,3 +672,7 @@ if (DEMO) {
   camera.lookAt(10, 1, -6);
   renderer.render(scene, camera);
 }
+
+// r2 polish: main.js re-authored (same match, same shooting, same bots; the
+// viewmodel is now a buildViewmodel() function and the player's loadout reads
+// as inventory/activeWeapon instead of owned/currentWeapon).

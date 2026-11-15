@@ -1,7 +1,7 @@
-// state.js — match state machine + economy. Pure logic, no rendering:
+// state.js — the match state machine and the money. Pure logic, no drawing:
 // LOBBY -> BUY -> ROUND -> ROUND_END -> (BUY | MATCH_END).
-// A round ends when one team is wiped out, or when the timer hits zero
-// (defending Sentinel wins a timeout, as in classic round shooters).
+// A round ends when one team is wiped out, or when the clock runs out —
+// a timeout goes to Sentinel, the defenders, as in classic round shooters.
 
 import { MAP } from "./map.js";
 import { ECONOMY, WEAPONS } from "./weapons.js";
@@ -13,6 +13,16 @@ export const PHASE = {
   ROUND_END: "round_end",
   MATCH_END: "match_end",
 };
+
+const ARMOR_PRICE = 650;
+const ARMOR_AMOUNT = 50;
+
+// Losing-streak payout: the base loss purse plus a bonus per consecutive
+// loss, capped after two steps.
+export function lossPayout(streak) {
+  const steps = Math.min(streak - 1, 2);
+  return ECONOMY.roundLoss + steps * ECONOMY.roundLossStreakBonus;
+}
 
 export class Match {
   constructor(seed) {
@@ -43,14 +53,13 @@ export class Match {
     if (this.phase !== PHASE.ROUND) return null;
     this.phase = PHASE.ROUND_END;
     this.score[winningTeam] += 1;
-    const loser = winningTeam === "vanguard" ? "sentinel" : "vanguard";
-    this.lossStreak[loser] += 1;
+    const losingTeam = winningTeam === "vanguard" ? "sentinel" : "vanguard";
+    this.lossStreak[losingTeam] += 1;
     this.lossStreak[winningTeam] = 0;
-    // Economy: winner paid, loser paid, loss-streak bonus caps at two steps.
-    const lossPay = ECONOMY.roundLoss +
-      Math.min(this.lossStreak[loser] - 1, 2) * ECONOMY.roundLossStreakBonus;
-    if (winningTeam === "vanguard") this.money += ECONOMY.roundWin;
-    else this.money += lossPay;
+    // Payday: the winners take the round-win purse; the losers take the
+    // loss purse plus a streak bonus that caps after two steps.
+    const lossPay = lossPayout(this.lossStreak[losingTeam]);
+    this.money += winningTeam === "vanguard" ? ECONOMY.roundWin : lossPay;
     const matchOver =
       this.score[winningTeam] >= MAP.roundsToWin || this.round >= MAP.maxRounds;
     return { winner: winningTeam, reason, matchOver, lossPay };
@@ -66,8 +75,7 @@ export class Match {
 
   finishMatch() {
     this.phase = PHASE.MATCH_END;
-    this.winner =
-      this.score.vanguard > this.score.sentinel ? "vanguard" : "sentinel";
+    this.winner = this.score.vanguard > this.score.sentinel ? "vanguard" : "sentinel";
     return this.winner;
   }
 
@@ -88,14 +96,16 @@ export class Match {
     return null;
   }
 
-  canAfford(price) { return this.money >= price; }
+  canAfford(price) {
+    return this.money >= price;
+  }
 
   buy(itemId) {
-    // Returns { ok, item } or { ok: false, reason }.
+    // Returns { ok, item } on success, { ok: false, reason } otherwise.
     if (this.phase !== PHASE.BUY) return { ok: false, reason: "Buy phase is over" };
     if (itemId === "armor") {
-      if (!this.canAfford(650)) return { ok: false, reason: "Not enough money" };
-      this.money -= 650;
+      if (!this.canAfford(ARMOR_PRICE)) return { ok: false, reason: "Not enough money" };
+      this.money -= ARMOR_PRICE;
       return { ok: true, item: "armor" };
     }
     const def = WEAPONS[itemId];
@@ -105,3 +115,7 @@ export class Match {
     return { ok: true, item: itemId };
   }
 }
+
+// The vest's protection, shared with the buy menu: 50 armour points.
+// r2 polish: state re-authored (same rules, same payouts, same phase flow).
+export { ARMOR_AMOUNT };

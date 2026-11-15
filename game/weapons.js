@@ -1,102 +1,50 @@
-// weapons.js — fictional weapon definitions and the buy catalogue.
-// Names, stats and prices are original to this build; nothing here copies a
-// real-world weapon's branding.
+// weapons.js — the armoury: fictional guns, buyable gear, and the economy.
+// Every name, stat and price is invented for this build; nothing here borrows
+// a real-world weapon's branding. The numbers are the game's balance: a rifle
+// kills in three body shots, a pistol in four, a marksman rifle in two.
 
-export const WEAPONS = {
-  mantis: {
-    id: "mantis",
-    name: "MANTIS AR",
-    kind: "rifle",
-    price: 2700,
-    damage: 34,          // body damage per hit at close range
-    headshotMult: 2,
-    rpm: 600,
-    magSize: 25,
-    reserve: 75,
-    reloadTime: 2.2,     // seconds
-    spread: 0.011,       // radians of random cone
-    range: 90,           // metres before falloff to zero
-    auto: true,
-  },
-  sidewinder: {
-    id: "sidewinder",
-    name: "SIDEWINDER P9",
-    kind: "pistol",
-    price: 0,            // every operative starts with one
-    damage: 26,
-    headshotMult: 2,
-    rpm: 320,
-    magSize: 12,
-    reserve: 36,
-    reloadTime: 1.6,
-    spread: 0.016,
-    range: 45,
-    auto: false,
-  },
-  longbow: {
-    id: "longbow",
-    name: "LONGBOW DMR",
-    kind: "rifle",
-    price: 4100,
-    damage: 72,
-    headshotMult: 2,
-    rpm: 150,
-    magSize: 10,
-    reserve: 30,
-    reloadTime: 2.8,
-    spread: 0.002,
-    range: 120,
-    auto: false,
-  },
-  hornet: {
-    id: "hornet",
-    name: "HORNET SMG",
-    kind: "smg",
-    price: 1900,
-    damage: 22,
-    headshotMult: 2,
-    rpm: 820,
-    magSize: 32,
-    reserve: 96,
-    reloadTime: 2.0,
-    spread: 0.022,
-    range: 40,
-    auto: true,
-  },
-};
+// One row per gun: id, display name, class, price, body damage, headshot
+// multiplier, rounds per minute, magazine, spare ammo, reload seconds,
+// spread (radians), range (metres), automatic or not.
+const GUN_ROWS = [
+  ["mantis", "MANTIS AR", "rifle", 2700, 34, 2, 600, 25, 75, 2.2, 0.011, 90, true],
+  ["sidewinder", "SIDEWINDER P9", "pistol", 0, 26, 2, 320, 12, 36, 1.6, 0.016, 45, false],
+  ["longbow", "LONGBOW DMR", "rifle", 4100, 72, 2, 150, 10, 30, 2.8, 0.002, 120, false],
+  ["hornet", "HORNET SMG", "smg", 1900, 22, 2, 820, 32, 96, 2.0, 0.022, 40, true],
+];
 
-export const GEAR = {
-  armor: {
-    id: "armor",
-    name: "PLATE VEST",
-    desc: "Absorbs half of incoming damage until it breaks. 50 armor.",
-    price: 650,
-  },
-  mantis: {
-    id: "mantis",
-    name: "MANTIS AR",
-    desc: "Standard-issue rifle. 25-round mag, steady at mid range.",
-    price: 2700,
-  },
-  longbow: {
-    id: "longbow",
-    name: "LONGBOW DMR",
-    desc: "Slow, precise marksman rifle. Two body shots at most ranges.",
-    price: 4100,
-  },
-  hornet: {
-    id: "hornet",
-    name: "HORNET SMG",
-    desc: "Fast, close-quarters spray. Cheap, hungry, forgiving.",
-    price: 1900,
-  },
-};
+function gunFromRow(row) {
+  const [id, name, kind, price, damage, headshotMult, rpm, magSize, reserve, reloadTime, spread, range, auto] = row;
+  return { id, name, kind, price, damage, headshotMult, rpm, magSize, reserve, reloadTime, spread, range, auto };
+}
 
-// Economy: Counter-Strike-style, tuned for 100-second rounds.
+export const WEAPONS = Object.fromEntries(GUN_ROWS.map((row) => [row[0], gunFromRow(row)]));
+
+// The buy menu sells the same guns (by their catalogue text) plus armour.
+// The pistol is free because every operative spawns with one.
+// One row per item: id, display name, catalogue text, price.
+const GEAR_ROWS = [
+  ["armor", "PLATE VEST", "Absorbs half of incoming damage until it breaks. 50 armor.", 650],
+  ["mantis", "MANTIS AR", "Standard-issue rifle. 25-round mag, steady at mid range.", 2700],
+  ["longbow", "LONGBOW DMR", "Slow, precise marksman rifle. Two body shots at most ranges.", 4100],
+  ["hornet", "HORNET SMG", "Fast, close-quarters spray. Cheap, hungry, forgiving.", 1900],
+];
+
+function gearFromRow(row) {
+  const [id, name, desc, price] = row;
+  return { id, name, desc, price };
+}
+
+export const GEAR = Object.fromEntries(GEAR_ROWS.map((row) => [row[0], gearFromRow(row)]));
+
+// Money flow, Counter-Strike-style, tuned for 100-second rounds: a kill pays
+// for half a vest, a round win pays for a rifle, a loss still pays — and a
+// losing streak pays a little more each time, up to two steps.
+// r2 polish: weapons re-authored as data rows (same values, same balance).
 export const ECONOMY = {
   startMoney: 800,
   killReward: 300,
   roundWin: 3250,
   roundLoss: 1900,
-  roundLossStreakBonus: 500, // +500 per consecutive loss, capped at 2 steps
+  roundLossStreakBonus: 500,
 };

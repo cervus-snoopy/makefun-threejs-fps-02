@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>SANDLINE — Tactical FPS</title>
 <style>
+  /* Palette: amber Vanguard, teal Sentinel, dark panels, pale text. */
   :root {
     --amber: #e8a33d;
     --teal: #2fb3a3;
@@ -15,23 +17,36 @@
     --dim: #9aa3ad;
     --red: #e5484d;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * {
+    box-sizing: border-box;
+    margin-top: 0; margin-right: 0; margin-bottom: 0; margin-left: 0;
+    padding-top: 0; padding-right: 0; padding-bottom: 0; padding-left: 0;
+  }
   html, body { width: 100%; height: 100%; overflow: hidden; background: var(--ink); }
   body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: var(--text); }
-  #app { position: fixed; inset: 0; }
+  #app { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
   canvas { display: block; }
 
-  /* ---------- HUD ---------- */
-  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  /* ---------- HUD: crosshair, panels, score, health, ammo ---------- */
+  #hud { position: fixed; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; display: none; }
   #hud.on { display: block; }
-  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
-    transform: translate(-50%, -50%); }
-  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: var(--text); }
-  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
-  #crosshair::after { left: 0; top: 10px; width: 22px; height: 2px; }
+  #crosshair {
+    position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+    transform: translate(-50%, -50%);
+  }
+  #crosshair::before {
+    content: ""; position: absolute; background: var(--text);
+    left: 10px; top: 0; width: 2px; height: 22px;
+  }
+  #crosshair::after {
+    content: ""; position: absolute; background: var(--text);
+    left: 0; top: 10px; width: 22px; height: 2px;
+  }
   #crosshair .dot { position: absolute; left: 10px; top: 10px; width: 2px; height: 2px; background: var(--amber); }
-  #hitmarker { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px;
-    transform: translate(-50%, -50%) rotate(45deg); opacity: 0; }
+  #hitmarker {
+    position: absolute; left: 50%; top: 50%; width: 26px; height: 26px;
+    transform: translate(-50%, -50%) rotate(45deg); opacity: 0;
+  }
   #hitmarker span { position: absolute; background: #fff; }
   #hitmarker span:nth-child(1) { left: 0; top: 0; width: 8px; height: 2px; }
   #hitmarker span:nth-child(2) { right: 0; top: 0; width: 8px; height: 2px; }
@@ -39,10 +54,14 @@
   #hitmarker span:nth-child(4) { right: 0; bottom: 0; width: 8px; height: 2px; }
   #hitmarker.kill span { background: var(--red); }
 
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-    padding: 8px 12px; backdrop-filter: blur(2px); }
-  #topbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
-    display: flex; gap: 10px; align-items: stretch; text-align: center; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; backdrop-filter: blur(2px);
+  }
+  #topbar {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: stretch; text-align: center;
+  }
   #topbar .score { font-size: 26px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
   #topbar .team { font-size: 11px; letter-spacing: 0.12em; font-weight: 700; }
   #topbar .team.van { color: var(--amber); }
@@ -69,18 +88,27 @@
   #banner p { color: var(--dim); margin-top: 6px; font-size: 15px; }
   #banner.win h2 { color: var(--amber); }
   #banner.lose h2 { color: var(--red); }
-  #damageVignette { position: absolute; inset: 0; pointer-events: none; opacity: 0;
-    background: radial-gradient(ellipse at center, transparent 55%, rgba(229, 72, 77, 0.55) 100%); }
-  #hint { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+  #damageVignette {
+    position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(229, 72, 77, 0.55) 100%);
+  }
+  #hint {
+    position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
     font-size: 13px; color: var(--dim); background: var(--panel); padding: 6px 12px;
-    border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); }
+    border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);
+  }
 
-  /* ---------- Overlays (menu / buy / end) ---------- */
-  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: rgba(5, 8, 12, 0.78); z-index: 10; }
+  /* ---------- Overlays: menu, buy phase, end screen ---------- */
+  .overlay {
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 8, 12, 0.78); z-index: 10;
+  }
   .overlay.hidden { display: none; }
-  .card { width: min(620px, 92vw); background: #10161f; border: 1px solid var(--line);
-    border-radius: 10px; padding: 28px 32px; }
+  .card {
+    width: min(620px, 92vw); background: #10161f; border: 1px solid var(--line);
+    border-radius: 10px; padding: 28px 32px;
+  }
   .card h1 { font-size: 44px; letter-spacing: 0.04em; }
   .card h1 .sand { color: var(--amber); }
   .card h1 .line2 { color: var(--teal); }
@@ -113,6 +141,8 @@
   }
 }
 </script>
+<!-- r2 polish: page re-authored (same layout, same HUD, same import map; the
+     crosshair rules are split per pseudo-element and the CSS is grouped). -->
 </head>
 <body>
 <div id="app"></div>
